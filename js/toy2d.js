@@ -579,7 +579,11 @@
       play.textContent = st.playing ? "Pause" : "Play";
       play.setAttribute("aria-pressed", st.playing);
       if (st.playing) {
-        if (st.t >= T - 1) st.t = 0;
+        if (st.t >= T - 1) {
+          st.t = 0;
+          slider.value = 0;
+          recompute();
+        }
         timer = setInterval((() => {
           if (st.t >= T - 1) {
             play.click();
@@ -603,7 +607,8 @@
       if (sim.comp && sim.L[k] === UNK) extra = sim.comp.carved[k] ? " · carved away by the ring" : " · kept by the completion";
       tip.textContent = `${name}${extra}`;
       tip.hidden = false;
-      tip.style.left = e.clientX - rc.left + 14 + "px";
+      const tx = e.clientX - rc.left, tw = tip.offsetWidth;
+      tip.style.left = (tx + 14 + tw <= rc.width ? tx + 14 : Math.max(0, tx - 14 - tw)) + "px";
       tip.style.top = e.clientY - rc.top + 10 + "px";
     }));
     canvas.addEventListener("mouseleave", (() => tip.hidden = true));

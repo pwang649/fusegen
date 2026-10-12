@@ -2,6 +2,7 @@
   "use strict";
   const NS = "http://www.w3.org/2000/svg";
   const SURF = "#fcfcfb";
+  const NARROW = 520;
   function el(tag, attrs, parent) {
     const e = document.createElementNS(NS, tag);
     for (const k in attrs) e.setAttribute(k, attrs[k]);
@@ -20,7 +21,7 @@
   }
   function niceTicks(lo, hi, n) {
     const span = hi - lo, step0 = span / Math.max(1, n), mag = Math.pow(10, Math.floor(Math.log10(step0)));
-    const step = [ 1, 2, 2.5, 5, 10 ].map((m => m * mag)).find((s => s >= step0)) || step0;
+    const step = [ 1, 2, 5, 10 ].map((m => m * mag)).find((s => s >= step0)) || step0;
     const a = Math.floor(lo / step) * step, b = Math.ceil(hi / step) * step, out = [];
     for (let v = a; v <= b + step * 1e-6; v += step) out.push(+v.toFixed(10));
     return out;
@@ -56,18 +57,34 @@
   }
   function place(tip, host, x, y) {
     const w = host.clientWidth, tw = tip.offsetWidth;
-    tip.style.left = Math.min(Math.max(0, x + 14), w - tw) + "px";
+    tip.style.left = Math.min(Math.max(0, x + 14), Math.max(0, w - tw)) + "px";
     tip.style.top = y + "px";
+  }
+  function watch(host, draw) {
+    host._draw = draw;
+    if (host._ro) return;
+    let w = host.clientWidth, pending = false;
+    host._ro = new ResizeObserver((() => {
+      if (host.clientWidth === w || pending) return;
+      pending = true;
+      requestAnimationFrame((() => {
+        pending = false;
+        w = host.clientWidth;
+        host._draw();
+      }));
+    }));
+    host._ro.observe(host);
   }
   function lineChart(host, opt) {
     const draw = () => {
       host.querySelectorAll("svg").forEach((s => s.remove()));
-      const W = Math.max(320, host.clientWidth), Hh = opt.height || 300;
+      const W = Math.max(300, host.clientWidth), Hh = opt.height || 300, narrow = W < NARROW;
+      const showXLabel = opt.xLabel && (!opt.xFmt || narrow);
       const m = {
         l: 52,
-        r: opt.endLabel ? 118 : 18,
-        t: 14,
-        b: 40
+        r: opt.endLabel && !narrow ? 118 : 18,
+        t: opt.endLabel && narrow ? 26 : 14,
+        b: showXLabel ? 42 : 30
       };
       const svg = el("svg", {
         viewBox: `0 0 ${W} ${Hh}`,
@@ -83,8 +100,8 @@
       const pad = (hi - lo) * .08 || 1;
       const ticks = niceTicks(opt.zero ? 0 : lo - pad, hi + pad, 5);
       const y0 = ticks[0], y1 = ticks[ticks.length - 1];
-      const xs = opt.x, xmin = xs[0], xmax = xs[xs.length - 1];
-      const X = v => m.l + (v - xmin) / (xmax - xmin) * (W - m.l - m.r);
+      const xs = opt.x, xmin = xs[0], xmax = xs[xs.length - 1], ins = opt.xFmt ? 26 : 8;
+      const X = v => m.l + ins + (v - xmin) / (xmax - xmin) * (W - m.l - m.r - 2 * ins);
       const Y = v => Hh - m.b - (v - y0) / (y1 - y0) * (Hh - m.t - m.b);
       for (const tk of ticks) {
         el("line", {
@@ -97,8 +114,8 @@
         text(svg, m.l - 8, Y(tk) + 4, opt.fmt(tk, true), "tick", "end");
       }
       const xt = opt.xTicks || xs;
-      for (const v of xt) text(svg, X(v), Hh - m.b + 18, opt.xFmt ? opt.xFmt(v) : String(v), "tick", "middle");
-      if (opt.xLabel) text(svg, (m.l + W - m.r) / 2, Hh - 4, opt.xLabel, "axis-l", "middle");
+      for (const v of xt) text(svg, X(v), Hh - m.b + 18, opt.xFmt && !narrow ? opt.xFmt(v) : String(v), "tick", "middle");
+      if (showXLabel) text(svg, (m.l + W - m.r) / 2, Hh - 6, opt.xLabel, "axis-l", "middle");
       for (const s of vis) {
         const d = s.values.map(((v, i) => v == null ? null : `${X(xs[i])},${Y(v)}`)).filter(Boolean).join(" L");
         el("path", {
@@ -134,8 +151,8 @@
       if (opt.endLabel) {
         const s = vis.find((q => q.key === opt.endLabel));
         if (s) {
-          const v = s.values[s.values.length - 1];
-          text(svg, X(xmax) + 10, Y(v) + 4, `${s.label || s.name} ${opt.fmt(v)}`, "dlabel");
+          const v = s.values[s.values.length - 1], str = `${s.label || s.name} ${opt.fmt(v)}`;
+          if (narrow) text(svg, X(xmax), opt.lowerBetter ? Y(v) + 20 : Y(v) - 12, str, "dlabel", "end"); else text(svg, X(xmax) + 10, Y(v) + 4, str, "dlabel");
         }
       }
       const tip = tipEl(host), xh = el("line", {
@@ -176,22 +193,31 @@
         const r = svg.getBoundingClientRect(), sc = r.width / W;
         place(tip, host, X(xs[bi]) * sc, Math.max(0, py * sc - 20));
       };
+      const hide = () => {
+        tip.hidden = true;
+        xh.setAttribute("visibility", "hidden");
+      };
       const loc = e => {
         const r = svg.getBoundingClientRect(), sc = W / r.width;
         return [ (e.clientX - r.left) * sc, (e.clientY - r.top) * sc ];
       };
-      hit.addEventListener("pointermove", (e => show(...loc(e))));
-      hit.addEventListener("pointerleave", (() => {
-        tip.hidden = true;
-        xh.setAttribute("visibility", "hidden");
+      hit.addEventListener("pointermove", (e => {
+        if (e.pointerType === "mouse") show(...loc(e));
       }));
+      hit.addEventListener("pointerdown", (e => show(...loc(e))));
+      hit.addEventListener("pointerleave", (e => {
+        if (e.pointerType === "mouse") hide();
+      }));
+      if (!host._outside) {
+        host._outside = e => {
+          if (!host.contains(e.target)) host._hide && host._hide();
+        };
+        document.addEventListener("pointerdown", host._outside);
+      }
+      host._hide = hide;
     };
     draw();
-    if (!host._ro) {
-      host._ro = new ResizeObserver((() => host._draw && host._draw()));
-      host._ro.observe(host);
-    }
-    host._draw = draw;
+    watch(host, draw);
     return {
       redraw: draw
     };
@@ -199,11 +225,12 @@
   function barChart(host, opt) {
     const draw = () => {
       host.querySelectorAll("svg").forEach((s => s.remove()));
-      const W = Math.max(320, host.clientWidth), bar = 18, gap = 14, labelW = Math.min(230, W * .36);
+      const W = Math.max(300, host.clientWidth), bar = 18, stack = W < NARROW, gap = stack ? 34 : 14;
+      const labelW = stack ? 8 : Math.min(230, W * .36);
       const m = {
         l: labelW,
         r: 62,
-        t: 6,
+        t: stack ? 16 : 6,
         b: 26
       }, Hh = m.t + m.b + opt.rows.length * (bar + gap);
       const svg = el("svg", {
@@ -226,8 +253,8 @@
       }
       const tip = tipEl(host);
       opt.rows.forEach(((r, i) => {
-        const y = m.t + i * (bar + gap) + gap / 2, w = Math.max(2, X(r.value) - X(0)), rr = Math.min(4, w / 2);
-        text(svg, m.l - 10, y + bar / 2 + 4, r.name, r.ours ? "dlabel" : "dlabel2", "end");
+        const y = m.t + i * (bar + gap) + (stack ? gap - 8 : gap / 2), w = Math.max(2, X(r.value) - X(0)), rr = Math.min(4, w / 2);
+        if (stack) text(svg, m.l, y - 6, r.name, r.ours ? "dlabel" : "dlabel2", "start"); else text(svg, m.l - 10, y + bar / 2 + 4, r.name, r.ours ? "dlabel" : "dlabel2", "end");
         const g = el("g", {
           tabindex: 0
         }, svg);
@@ -237,13 +264,13 @@
         }, g);
         el("rect", {
           x: X(0),
-          y: y - gap / 2,
+          y: y - (stack ? 20 : gap / 2),
           width: W - m.l,
-          height: bar + gap,
+          height: bar + (stack ? 24 : gap),
           fill: "transparent"
         }, g);
         text(svg, X(0) + w + 8, y + bar / 2 + 4, opt.fmt(r.value), r.ours ? "dlabel" : "dlabel2");
-        const on = e => {
+        const on = () => {
           tipRows(tip, r.name, [ {
             name: "s per new frame",
             color: r.color,
@@ -254,13 +281,16 @@
           place(tip, host, (X(0) + w) * sc, (y - 6) * sc);
         };
         g.addEventListener("pointermove", on);
+        g.addEventListener("pointerdown", on);
         g.addEventListener("focus", on);
-        g.addEventListener("pointerleave", (() => tip.hidden = true));
+        g.addEventListener("pointerleave", (e => {
+          if (e.pointerType === "mouse") tip.hidden = true;
+        }));
         g.addEventListener("blur", (() => tip.hidden = true));
       }));
     };
     draw();
-    new ResizeObserver(draw).observe(host);
+    watch(host, draw);
   }
   window.FGCharts = {
     lineChart: lineChart,

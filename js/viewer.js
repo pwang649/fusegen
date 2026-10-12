@@ -21,6 +21,7 @@
     return new Type(u8.buffer);
   }
   async function unpack(b64) {
+    if (typeof DecompressionStream !== "function") throw new Error("The 3D view needs a newer browser");
     const bin = atob(b64), z = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) z[i] = bin.charCodeAt(i);
     const buf = await new Response(new Blob([ z ]).stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer();
@@ -242,8 +243,17 @@
       }
       if (tok !== this.token) return;
       this.el.classList.remove("loading");
-      if (this.mesh) this.scene.remove(this.mesh);
-      this.mesh = new THREE.Mesh(g, g.userData.app ? this.matColor : this.matFlat);
+      if (this.mesh) {
+        this.scene.remove(this.mesh);
+        this.mesh.geometry.dispose();
+      }
+      const own = new THREE.BufferGeometry;
+      own.setIndex(g.index);
+      for (const k of [ "position", "normal" ]) own.setAttribute(k, g.attributes[k]);
+      own.userData = g.userData;
+      if (!g.boundingBox) g.computeBoundingBox();
+      own.boundingBox = g.boundingBox;
+      this.mesh = new THREE.Mesh(own, g.userData.app ? this.matColor : this.matFlat);
       this.applyMode();
       this.scene.add(this.mesh);
       this.requestRender();

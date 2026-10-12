@@ -57,6 +57,10 @@
       el.dataset.error = "WebGL is not available in this browser";
       return null;
     }
+    if (window.FG_PACK && typeof DecompressionStream !== "function") {
+      el.dataset.error = "The 3D view needs a newer browser";
+      return null;
+    }
     return new FGView.Viewer(el, orbit);
   }
   function frameOrbit(orbit, obj) {
@@ -73,7 +77,7 @@
     };
     const img = $("#ts-img"), slider = $("#ts-slider"), strip = $("#ts-strip"), play = $("#ts-play");
     const orbit = new FGView.Orbit;
-    FGView.autoRotate(orbit);
+    if (!reduced) FGView.autoRotate(orbit);
     const viewer = viewerOr($("#ts-viewer"), orbit);
     const cache = {};
     function preload(obj) {
@@ -92,7 +96,10 @@
         im.src = A(`assets/frames/${st.obj}/${pad3(t)}.jpg`);
         im.alt = "";
         im.dataset.t = t;
-        im.addEventListener("click", (() => set(t)));
+        im.addEventListener("click", (() => {
+          stop();
+          set(t);
+        }));
         strip.appendChild(im);
       }
     }
@@ -154,7 +161,7 @@
     if (viewer) viewer.setMode("src");
     setObj("school_bus1");
     const q = new URLSearchParams(location.search);
-    if (q.has("t")) set(Math.max(0, Math.min(79, +q.get("t") || 0))); else if (!reduced) setTimeout(start, 600);
+    if (q.has("t")) set(Math.max(0, Math.min(79, Math.round(+q.get("t")) || 0))); else if (!reduced) setTimeout(start, 600);
   })();
   (function() {
     const at = new URLSearchParams(location.search).get("at");
@@ -183,9 +190,12 @@
       f: 7
     }, box = $("#sl-frames");
     for (const f of CAP) {
-      const b = document.createElement("button");
-      b.textContent = `after frame ${f}`;
+      const b = document.createElement("button"), lg = document.createElement("span");
+      lg.className = "lg";
+      lg.textContent = "after frame ";
+      b.append(lg, document.createTextNode(String(f)));
       b.dataset.f = f;
+      b.setAttribute("aria-label", `after frame ${f}`);
       b.setAttribute("aria-pressed", String(f === st.f));
       b.addEventListener("click", (() => {
         st.f = f;
@@ -277,13 +287,27 @@
       hull: viewerOr($("#cp-hull"), orbit),
       comp: viewerOr($("#cp-comp"), orbit)
     };
+    if (v.obs) v.obs.setMode("src");
     if (v.comp) v.comp.setMode("src");
+    let tok = 0;
     function show() {
-      for (const k of [ "obs", "hull", "comp" ]) if (v[k]) v[k].show(`${st.obj}_f${pad2(st.f)}_${k}`);
+      const keys = [ "obs", "hull", "comp" ].map((k => `${st.obj}_f${pad2(st.f)}_${k}`)), mine = ++tok;
+      [ "obs", "hull", "comp" ].forEach(((k, i) => v[k] && v[k].show(keys[i])));
+      Promise.all(keys.map((k => FGView.getMesh(k)))).then((gs => {
+        if (mine !== tok) return;
+        const lo = [ Infinity, Infinity, Infinity ], hi = [ -Infinity, -Infinity, -Infinity ];
+        for (const g of gs) {
+          if (!g.boundingBox) g.computeBoundingBox();
+          const b = g.boundingBox;
+          [ b.min.x, b.min.y, b.min.z ].forEach(((x, a) => lo[a] = Math.min(lo[a], x)));
+          [ b.max.x, b.max.y, b.max.z ].forEach(((x, a) => hi[a] = Math.max(hi[a], x)));
+        }
+        FGView.frameObject(orbit, [ lo, hi ]);
+      })).catch((() => {}));
     }
     $("#cp-obj").addEventListener("change", (e => {
       st.obj = e.target.value;
-      frameOrbit(orbit, st.obj);
+      orbit.set(VIEW[st.obj]);
       show();
     }));
     $$("[data-cf]").forEach((b => b.addEventListener("click", (() => {
@@ -303,23 +327,30 @@
     psnr: [ 15.24, 17.87, 19.59, 21.27 ],
     lpips: [ .169, .126, .103, .083 ]
   }, {
+    key: "fgs",
+    name: "FuseGen, SAM 3D completion",
+    color: "#4a3aa7",
+    cd: [ .0529, .0342, .0313, .0243 ],
+    psnr: [ 15.93, 18.98, 20.03, 21.21 ],
+    lpips: [ .156, .119, .098, .081 ]
+  }, {
     key: "s3d",
     name: "Stream3D",
-    color: "#eb6834",
+    color: "#e34948",
     cd: [ .072, .0402, .0384, .0424 ],
     psnr: [ 15.17, 16.64, 17.44, 16.89 ],
     lpips: [ .168, .15, .129, .134 ]
   }, {
     key: "mv",
     name: "MVSAM3D, 8 views",
-    color: "#1baf7a",
+    color: "#eda100",
     cd: [ .0769, .0427, .0391, .0388 ],
     psnr: [ 14.98, 16.97, 17.04, 17.02 ],
     lpips: [ .175, .139, .131, .135 ]
   }, {
     key: "sv",
     name: "SAM 3D, single view",
-    color: "#eda100",
+    color: "#008300",
     cd: [ .0673, .0482, .0469, .0537 ],
     psnr: [ 15, 16.51, 16.36, 16.47 ],
     lpips: [ .172, .133, .136, .147 ]
@@ -330,14 +361,8 @@
     cd: [ .0782, .0436, .0393, .0327 ],
     psnr: [ 14.09, 15.47, 16.13, 16.95 ],
     lpips: [ .183, .158, .152, .138 ]
-  }, {
-    key: "fgs",
-    name: "FuseGen, SAM 3D completion",
-    color: "#008300",
-    cd: [ .0529, .0342, .0313, .0243 ],
-    psnr: [ 15.93, 18.98, 20.03, 21.21 ],
-    lpips: [ .156, .119, .098, .081 ]
   } ];
+  const COLOR = Object.fromEntries(SERIES.map((s => [ s.key, s.color ])));
   const METRIC = {
     psnr: {
       fmt: (v, tick) => tick ? String(v) : `${v.toFixed(2)} dB`,
@@ -378,6 +403,7 @@
       FGCharts.lineChart(host, {
         x: [ 7, 31, 55, 79 ],
         xFmt: v => `frame ${v}`,
+        xLabel: "scored frame",
         aria: `${M.head} over the stream`,
         height: 320,
         series: SERIES.map((s => ({
@@ -431,29 +457,71 @@
     rows: [ {
       name: "FuseGen, LaCT completion",
       value: .31,
-      color: "#2a78d6",
+      color: COLOR.fg,
       ours: true
     }, {
       name: "Latent refinement",
       value: .45,
-      color: "#e87ba4"
+      color: COLOR.lr
     }, {
       name: "FuseGen, SAM 3D completion",
       value: .79,
-      color: "#008300",
+      color: COLOR.fgs,
       ours: true
     }, {
       name: "SAM 3D, single view",
       value: 4.99,
-      color: "#eda100"
+      color: COLOR.sv
     }, {
       name: "MVSAM3D, 8 views",
       value: 14.39,
-      color: "#1baf7a"
+      color: COLOR.mv
     }, {
       name: "Stream3D",
       value: 15.12,
-      color: "#eb6834"
+      color: COLOR.s3d
     } ]
   });
+  (function qual() {
+    const Q = D._qual, grid = $("#ql-grid"), box = $("#ql-objs");
+    if (!Q || !grid) return;
+    const COLS = {
+      gt: "Ground truth",
+      latent: "Latent refinement",
+      stream3d: "Stream3D",
+      fusegen: "FuseGen (ours)"
+    };
+    function show(obj) {
+      grid.replaceChildren();
+      const cell = (cls, txt) => {
+        const d = document.createElement("div");
+        d.className = cls;
+        d.textContent = txt;
+        grid.appendChild(d);
+      };
+      cell("ql-h", "");
+      for (const c of Q.cols) cell("ql-h" + (c === "fusegen" ? " ours" : ""), COLS[c]);
+      for (const f of Q.frames) {
+        cell("ql-r", `frame ${f}`);
+        for (const c of Q.cols) {
+          const im = document.createElement("img");
+          im.src = A(c === "gt" ? `assets/qual/${obj}_gt.jpg` : `assets/qual/${obj}_${c}_f${pad2(f)}.jpg`);
+          im.alt = `${COLS[c]}, ${NAMES[obj]}, frame ${f}`;
+          im.loading = "lazy";
+          grid.appendChild(im);
+        }
+      }
+    }
+    for (const obj of Q.objs) {
+      const b = document.createElement("button");
+      b.textContent = NAMES[obj];
+      b.setAttribute("aria-pressed", String(obj === "school_bus1"));
+      b.addEventListener("click", (() => {
+        press(box, b);
+        show(obj);
+      }));
+      box.appendChild(b);
+    }
+    show("school_bus1");
+  })();
 })();
