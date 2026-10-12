@@ -1,0 +1,518 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FuseGen: Reconstruct What You See, Generate What You Don't</title>
+<meta name="description" content="Streaming 3D object reconstruction with an exact evidence state: fuse every observed frame, generate only the space no camera has seen.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 3a13 13 0 0 1 0 26z' fill='%23eb6834'/%3E%3Cpath d='M16 3a13 13 0 0 0 0 26z' fill='%232a78d6'/%3E%3C/svg%3E">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://pwang649.github.io/fusegen/">
+<meta property="og:title" content="Reconstruct What You See, Generate What You Don't">
+<meta property="og:description" content="FuseGen: streaming 3D object reconstruction that fuses every observed frame exactly and generates only the space no camera has seen.">
+<meta property="og:image" content="https://pwang649.github.io/fusegen/assets/qual_grid.jpg">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="hero">
+  <p class="venue">Anonymous CVPR 2027 submission</p>
+  <h1>Reconstruct What You See,<br>Generate What You Don't</h1>
+  <p class="subtitle">Streaming 3D object reconstruction with an exact evidence state</p>
+  <nav class="links" aria-label="Paper links">
+    <span class="btn disabled">Paper and supplement: under review</span>
+    <span class="btn disabled" title="Released after review">Code (soon)</span>
+  </nav>
+</header>
+
+<main>
+
+<section class="teaser wide" id="teaser" aria-labelledby="teaser-h">
+  <h2 id="teaser-h" class="sr-only">Teaser</h2>
+  <div class="teaser-grid">
+    <figure class="panel">
+      <figcaption class="panel-h">Input: posed RGB-D frame <span class="mono" id="ts-frame">0</span> / 79</figcaption>
+      <img id="ts-img" class="frame-img" src="assets/frames/school_bus1/000.jpg" alt="Current input frame of the stream">
+      <div class="filmstrip" id="ts-strip" aria-hidden="true"></div>
+    </figure>
+    <figure class="panel">
+      <figcaption class="panel-h">Output after frame <span class="mono" id="ts-out">0</span>: mesh, drag to rotate</figcaption>
+      <div class="viewer" id="ts-viewer"></div>
+      <div class="share-bar" aria-live="polite">
+        <div class="share-track"><div class="share-gen" id="ts-gen-bar"></div></div>
+        <span><b id="ts-gen">–</b> of the surface is generated, the rest is measured</span>
+      </div>
+    </figure>
+  </div>
+  <div class="controls">
+    <button class="btn small" id="ts-play" aria-pressed="false">Play</button>
+    <label class="slider-l">frame <input type="range" id="ts-slider" min="0" max="79" value="0" aria-label="Stream frame"></label>
+    <div class="seg" role="group" aria-label="Mesh colours">
+      <button data-ts-mode="src" aria-pressed="true"><i class="key obs"></i>measured <i class="key gen"></i>generated</button>
+      <button data-ts-mode="app" aria-pressed="false">appearance</button>
+    </div>
+    <label>object
+      <select id="ts-obj">
+        <option value="school_bus1">school bus</option><option value="alarm">alarm clock</option>
+        <option value="grandmother">grandmother</option><option value="sofa">sofa</option>
+      </select></label>
+  </div>
+  <p class="tldr"><b>The idea.</b> A camera circles an object, and after every frame we want a complete 3D model.
+    FuseGen fuses every frame into an explicit 3D state that never forgets: the surface the cameras have <span class="obs-t">measured</span>.
+    It asks a generative model only about the space no camera has constrained yet: the part that is <span class="gen-t">generated</span>.
+    As the cameras cover the object, generated surface gives way to measured surface, and nothing a camera has seen is ever overwritten.</p>
+</section>
+
+<section id="abstract" aria-labelledby="abs-h">
+  <h2 id="abs-h">Abstract</h2>
+  <p>A camera moving around an object should yield a complete 3D asset after every frame that only gets better as frames arrive.
+  Recent methods condition a frozen image-to-3D generator on the stream and regenerate the asset, or refine its latent. Either way
+  every observation passes through the generator's coarse latent, which caps the fidelity of what has already been seen.
+  We take the opposite route. FuseGen keeps an explicit persistent state that integrates every RGB-D frame exactly (a truncated
+  signed distance field with free, surface and unknown labels, plus Gaussians fitted online) and asks a generative model only
+  about the space no camera has constrained yet. That completion comes from a test-time-trained view-synthesis model whose ring
+  of novel-view silhouettes carves the unknown region. It is re-queried every few frames and confined to unknown voxels, so
+  generated content never overrides an observation. On Stream3D's 30-object GSO benchmark, with the same cameras and depth for
+  every method, FuseGen ends the stream at 21.3&nbsp;dB PSNR against 16.9–17.0&nbsp;dB for Stream3D and multi-view regeneration,
+  halves their Chamfer distance, leads in geometry from the first scored frame, and costs 0.31&nbsp;s per frame, a 48th of Stream3D's.</p>
+</section>
+
+<section id="why" aria-labelledby="why-h">
+  <h2 id="why-h">Why not keep the generator in the loop?</h2>
+  <p>Image-to-3D generators turn one view into a complete asset in seconds. Streaming methods keep the generator in the loop:
+  they regenerate the asset from a memory of frames, or refine its latent in place. Then every observation, even one that
+  already pins the surface down exactly, is routed through the generator's coarse latent. Early in the stream that is the right
+  call, because most of the object is unseen. Late in the stream it is a burden, because the generator re-draws what the
+  cameras have already measured.</p>
+  <div class="tiles">
+    <div class="tile"><div class="tile-l">surface seen by the last scored frame</div><div class="tile-v">98&nbsp;%</div>
+      <div class="tile-d">27&nbsp;% at frame 7, 65&nbsp;% at frame 31</div></div>
+    <div class="tile"><div class="tile-l">lower Chamfer error at frame 79 from plain fusion, no prior at all</div><div class="tile-v">15×</div>
+      <div class="tile-d">vs refining the generator's latent with the same inputs</div></div>
+    <div class="tile"><div class="tile-l">CUT3R's points in unseen space within 2&nbsp;cm of the surface</div><div class="tile-v">4.6&nbsp;%</div>
+      <div class="tile-d">vs 40&nbsp;% for a generative prior: recurrent reconstruction does not hallucinate well</div></div>
+  </div>
+  <p>So we separate the two jobs. <b>Reconstruct</b> what has been seen: fuse it exactly. <b>Generate</b> what has not: only
+  there, and only until a camera gets to see it.</p>
+</section>
+
+<section id="overview" class="wide" aria-labelledby="ov-h">
+  <h2 id="ov-h">Method at a glance</h2>
+  <p class="narrow">FuseGen carries three things from frame to frame. An <span class="obs-t">evidence grid</span> and a set of
+  <span class="obs-t">observed Gaussians</span> hold everything observed so far. A <span class="gen-t">completion</span> covers
+  the space no camera has observed. Every new frame is fused into the first two. Every few frames, the completion is recomputed
+  from all frames so far. Whenever an output is requested, the three are composed into a mesh and a set of Gaussians.
+  Click a block to jump to its step.</p>
+  <figure class="diagram">
+    <svg viewBox="0 0 1000 382" role="img" aria-labelledby="ov-title ov-desc" id="ov-svg">
+      <title id="ov-title">Overview of FuseGen</title>
+      <desc id="ov-desc">Each frame is fused into an evidence grid and observed Gaussians. Every few frames LaCT renders a ring of
+        novel views whose silhouettes carve the unknown voxels into a completion. The output composes observed geometry from the
+        grid with generated geometry in unknown space only.</desc>
+      <defs>
+        <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker>
+        <marker id="arr-o" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#eb6834"/></marker>
+      </defs>
+      <rect x="200" y="12" width="316" height="218" rx="10" class="grp obs"/>
+      <text x="214" y="33" class="grp-t obs">Reconstruct what you see · every frame</text>
+      <rect x="200" y="246" width="528" height="124" rx="10" class="grp gen"/>
+      <text x="214" y="361" class="grp-t gen">Generate what you don't · every few frames</text>
+
+      <g class="node" data-goto="step-input" tabindex="0" role="link" aria-label="Input frame">
+        <rect x="10" y="112" width="168" height="150" rx="8" class="box io"/>
+        <image href="assets/frames/school_bus1/031.jpg" x="54" y="118" width="80" height="80"/>
+        <text x="94" y="218" class="bt">frame t</text>
+        <text x="94" y="236" class="bs">RGB, mask, depth</text><text x="94" y="251" class="bs">and camera pose</text>
+      </g>
+      <g class="node" data-goto="step-grid" tabindex="0" role="link" aria-label="Evidence grid">
+        <rect x="216" y="44" width="284" height="82" rx="8" class="box obs"/>
+        <image href="assets/slices/school_bus1_yz_f31.png" x="224" y="53" width="64" height="64"/>
+        <text x="300" y="75" class="bt l">evidence grid</text>
+        <text x="300" y="94" class="bs l">TSDF + labels: free, surface,</text>
+        <text x="300" y="110" class="bs l">behind, unknown</text>
+      </g>
+      <g class="node" data-goto="step-gauss" tabindex="0" role="link" aria-label="Observed Gaussians">
+        <rect x="216" y="140" width="284" height="74" rx="8" class="box obs"/>
+        <text x="232" y="171" class="bt l">observed Gaussians</text>
+        <text x="232" y="190" class="bs l">fitted online to the frames</text>
+      </g>
+      <g class="node" data-goto="step-lact" tabindex="0" role="link" aria-label="LaCT ring of novel views">
+        <rect x="216" y="260" width="284" height="84" rx="8" class="box gen"/>
+        <image href="assets/ring/school_bus1_g08.jpg" x="224" y="268" width="102" height="68"/>
+        <text x="338" y="289" class="bt l">LaCT</text>
+        <text x="338" y="307" class="bs l">a ring of novel views</text>
+        <text x="338" y="322" class="bs l">from frames 0..t</text>
+      </g>
+      <g class="node" data-goto="step-lact" tabindex="0" role="link" aria-label="Carving the unknown voxels">
+        <rect x="528" y="260" width="186" height="84" rx="8" class="box gen"/>
+        <text x="621" y="289" class="bt">carve</text>
+        <text x="621" y="307" class="bs">silhouettes remove</text>
+        <text x="621" y="322" class="bs">unknown voxels only</text>
+      </g>
+      <g class="node" data-goto="step-compose" tabindex="0" role="link" aria-label="Compose by label">
+        <rect x="560" y="96" width="216" height="98" rx="8" class="box io"/>
+        <text x="668" y="128" class="bt">compose by label</text>
+        <text x="668" y="149" class="bs">measured: from the TSDF</text>
+        <text x="668" y="166" class="bs">unknown: from the completion</text>
+      </g>
+      <g class="node" data-goto="results" tabindex="0" role="link" aria-label="Output">
+        <rect x="810" y="62" width="180" height="168" rx="8" class="box io"/>
+        <image href="assets/out_thumb.jpg" x="830" y="70" width="140" height="90"/>
+        <text x="900" y="188" class="bt">mesh + Gaussians</text><text x="900" y="207" class="bs">after every frame</text>
+      </g>
+      <path d="M178,172 C196,172 196,86 214,86" class="edge" marker-end="url(#arr)"/>
+      <path d="M178,182 C196,182 198,177 214,177" class="edge" marker-end="url(#arr)"/>
+      <path d="M94,262 C94,302 150,302 214,302" class="edge dashed" marker-end="url(#arr-o)"/>
+      <text x="104" y="294" class="el gen">every 4 frames</text>
+      <path d="M500,86 C530,86 534,128 558,128" class="edge" marker-end="url(#arr)"/>
+      <path d="M500,177 C530,177 534,166 558,166" class="edge" marker-end="url(#arr)"/>
+      <path d="M500,302 L526,302" class="edge gen" marker-end="url(#arr-o)"/>
+      <path d="M690,260 L690,196" class="edge gen" marker-end="url(#arr-o)"/>
+      <text x="682" y="234" class="el gen" text-anchor="end">unknown space only</text>
+      <path d="M500,104 L540,104 L540,256" class="edge dotted" marker-end="url(#arr)"/>
+      <text x="534" y="238" class="el" text-anchor="end">labels</text>
+      <path d="M776,146 L808,146" class="edge" marker-end="url(#arr)"/>
+    </svg>
+  </figure>
+</section>
+
+<section id="toy" class="wide" aria-labelledby="toy-h">
+  <h2 id="toy-h">Try it: FuseGen in 2D</h2>
+  <p class="narrow">The whole method fits in a flat world. Below, a camera (black dot) circles a 2D object, starting from above,
+  and each frame gives a 1D depth image. The page runs the method's rules on a 96&nbsp;×&nbsp;96 grid while you watch: the TSDF
+  update, the four labels, carving by a ring of virtual views, and composition by label. Scrub the frame, switch the stage,
+  and hover a cell to read its state.</p>
+  <div class="toy" id="toy-root">
+    <div class="toy-stage">
+      <canvas class="toy-canvas" width="560" height="560" aria-label="2D simulation of FuseGen"></canvas>
+      <div class="toy-tip" hidden></div>
+      <div class="strip-l">depth image of the current frame (dark = near, white = background)</div>
+      <canvas class="toy-strip" height="18" aria-hidden="true"></canvas>
+    </div>
+    <div class="toy-side">
+      <div class="seg vertical" role="group" aria-label="Stage">
+        <button data-stage="observe" aria-pressed="false"><b>1</b> Observe</button>
+        <button data-stage="evidence" aria-pressed="false"><b>2</b> Evidence labels</button>
+        <button data-stage="complete" aria-pressed="false"><b>3</b> Complete the unknown</button>
+        <button data-stage="compose" aria-pressed="true"><b>4</b> Compose the output</button>
+      </div>
+      <div class="note" data-stage-note="observe" hidden>Each frame measures the depth along the rays inside the object's
+        silhouette (blue points). Past camera positions are the blue dots on the orbit.</div>
+      <div class="note" data-stage-note="evidence" hidden>Every cell gets a label: <i class="sw surf"></i>surface (inside the
+        TSDF band), <i class="sw beh"></i>behind (just behind a measured surface), <i class="sw unk"></i>unknown (nothing has
+        constrained it), or free (a ray went through it). Early on, the unknown region is a long shadow behind the seen surface.</div>
+      <div class="note" data-stage-note="complete" hidden>Every 4 frames a view-synthesis model guesses the object
+        (<span class="dash-key"></span> its guess) and renders it from a ring of 12 virtual cameras (<span class="dia-key"></span>).
+        Unknown cells that fall outside any rendered silhouette are carved away (hatched). Measured cells are never touched.</div>
+      <div class="note" data-stage-note="compose">The output contour takes <span class="obs-t">measured surface</span> from the
+        TSDF and <span class="gen-t">generated surface</span> (dashed) only in unknown cells. Play the stream: the generated part
+        shrinks as the cameras come round, and the error falls.</div>
+      <div class="controls tight">
+        <button class="btn small toy-play" aria-pressed="false">Play</button>
+        <label class="slider-l">frame <input type="range" class="toy-frame" min="0" max="39" value="7" aria-label="Frame"></label>
+      </div>
+      <div class="controls tight">
+        <label>object <select class="toy-shape"><option value="bus">bus</option><option value="cup">cup (opens left)</option><option value="duck">duck</option></select></label>
+        <label>completion <select class="toy-mode"><option value="guess">view-synthesis guess</option><option value="none">none: fill all unknown</option></select></label>
+        <label class="check"><input type="checkbox" class="toy-gt" checked> true outline <span class="gt-key"></span></label>
+      </div>
+      <dl class="readout">
+        <div><dt>frame</dt><dd class="ro-frame mono">7</dd></div>
+        <div><dt>unknown share of the hull</dt><dd class="ro-unknown mono">–</dd></div>
+        <div><dt>completion computed at</dt><dd class="ro-refresh mono">–</dd></div>
+        <div><dt>generated share of the output</dt><dd class="ro-gen mono">–</dd></div>
+        <div><dt>output error (Chamfer ×100)</dt><dd class="ro-err mono">–</dd></div>
+      </dl>
+      <p class="fine">The toy's view-synthesis model is a stand-in: the true shape, inflated and warped by an error that
+        shrinks as more of the surface has been observed. The real LaCT renders are shown in step 3 below.
+        Try the cup: silhouettes cannot carve a concavity, so until a camera looks into the cup (from about frame 25) the
+        completion closes it with a lid; the camera then measures the inside as free and the output opens.
+        With <i>completion: none</i>, all unknown space is filled and the early output is a long shadow.</p>
+    </div>
+  </div>
+</section>
+
+<section id="step-input" aria-labelledby="s0-h">
+  <h2 id="s0-h">The setting</h2>
+  <p>A camera moves around a single object. At time <var>t</var> it delivers an RGB image <var>I<sub>t</sub></var>, an object
+  mask <var>M<sub>t</sub></var>, a depth map <var>D<sub>t</sub></var> and the camera parameters. After each frame the method
+  must output a complete model of the object (3D Gaussians for rendering, a mesh for geometry) using only frames
+  0…<var>t</var>. The task has two regimes. Early, most of the object is unseen, and a good output needs a prior that can guess
+  the rest. Late, most of the surface has been measured, and a good output must keep those measurements exactly.</p>
+</section>
+
+<section id="step-grid" aria-labelledby="s1-h">
+  <h2 id="s1-h"><span class="stepno obs">1</span>Reconstructing what has been seen: the evidence grid</h2>
+  <p>The observed geometry lives in a truncated signed distance field (TSDF), a 256³ voxel grid around the object. Each voxel
+  <var>x</var> stores its signed distance <var>d</var>(<var>x</var>) to the observed surface. When a frame arrives, every voxel
+  is projected into the image. If it lands at a pixel with measured depth <var>D<sub>t</sub></var>(<var>u</var>) and lies at
+  depth <var>z</var>, the measured distance is <var>s</var>&nbsp;=&nbsp;<var>D<sub>t</sub></var>(<var>u</var>)&nbsp;−&nbsp;<var>z</var>.
+  Voxels inside a narrow band |<var>s</var>|&nbsp;≤&nbsp;<var>τ</var> update a running average:</p>
+  <div class="eq" role="math" aria-label="d of x becomes W of x times d of x plus s over tau, divided by W of x plus 1; W of x increases by one">
+    <var>d</var>(<var>x</var>) ← <span class="frac"><span><var>W</var>(<var>x</var>)&thinsp;<var>d</var>(<var>x</var>) + <var>s</var>/<var>τ</var></span><span><var>W</var>(<var>x</var>) + 1</span></span>,
+    &emsp; <var>W</var>(<var>x</var>) ← <var>W</var>(<var>x</var>) + 1
+  </div>
+  <p>This average is exactly the least-squares estimate of the distance from all frames that saw the voxel. The grid therefore
+  summarises the entire depth history in constant memory: observed geometry is never re-optimised, re-encoded or replayed, and
+  never forgotten.</p>
+  <p><b>What is known, and what is not.</b> Every voxel also collects evidence of being empty: a ray that passes through it
+  before the measured surface, or a projection outside the object mask. From this evidence each voxel gets one of four labels:
+  <span class="lab"><i class="sw surf"></i>surface</span> (on a measured surface),
+  <span class="lab"><i class="sw free"></i>free</span> (some camera has seen through it),
+  <span class="lab"><i class="sw beh"></i>behind</span> (just behind a measured surface, inside the object), and
+  <span class="lab"><i class="sw unk"></i>unknown</span> (no camera has constrained it). The unknown voxels are exactly the
+  space the observations say nothing about, and they are the <em>only</em> space a completion may fill.</p>
+
+  <figure class="card" id="slice-card">
+    <div class="card-controls">
+      <label>object <select id="sl-obj"><option value="school_bus1">school bus</option><option value="alarm">alarm clock</option>
+        <option value="grandmother">grandmother</option><option value="sofa">sofa</option></select></label>
+      <div class="seg" role="group" aria-label="Slice plane">
+        <button data-plane="yz" aria-pressed="true">side cut</button><button data-plane="xz" aria-pressed="false">front cut</button>
+        <button data-plane="xy" aria-pressed="false">top cut</button></div>
+    </div>
+    <div class="slice-row">
+      <div class="slice-wrap"><img id="sl-img" alt="Evidence labels on a slice through the object" src="assets/slices/school_bus1_yz_f07.png"></div>
+      <div class="slice-side">
+        <div class="seg vertical frames" role="group" aria-label="Frame" id="sl-frames"></div>
+        <div class="legend">
+          <span><i class="sw surf"></i>surface</span><span><i class="sw beh"></i>behind</span>
+          <span><i class="sw unk"></i>unknown</span><span><i class="sw free"></i>free</span>
+        </div>
+        <p class="fine" id="sl-stat"></p>
+      </div>
+    </div>
+    <figcaption>Evidence labels on a slice through the centre of a real stream (a held-out object, the paper's configuration).
+      The stream starts above the object, so after the first frames the unknown region is the long shadow under the top surface.
+      By frame 79 only the interior is still unknown, because no camera can see inside a solid object.</figcaption>
+  </figure>
+</section>
+
+<section id="step-gauss" aria-labelledby="s2-h">
+  <h2 id="s2-h"><span class="stepno obs">2</span>Appearance: observed Gaussians, fitted online</h2>
+  <p>The appearance of the observed surface is held by 3D Gaussians: small, coloured, semi-transparent ellipsoids that render
+  quickly from any camera. We grow and fit them online, as Gaussian SLAM systems do, except that our cameras are given. For each
+  new frame, Gaussians are added at the pixels the current set does not explain (missing coverage, wrong depth or wrong colour)
+  and are placed in 3D with the measured depth. A few optimisation steps then fit all Gaussians to the new frame and to randomly
+  chosen earlier frames:</p>
+  <div class="eq" role="math" aria-label="L equals the L1 colour error plus the L1 opacity-versus-mask error plus lambda D times the L1 depth error plus lambda h times the halo loss">
+    <var>𝓛</var> = ‖<var>Î</var> − <var>I</var>‖<sub>1</sub> + ‖<var>Â</var> − <var>M</var>‖<sub>1</sub>
+    + <var>λ<sub>D</sub></var>&thinsp;‖<var>D̂</var> − <var>D</var>‖<sub>1</sub> + <var>λ<sub>h</sub></var>&thinsp;<var>𝓛</var><sub>halo</sub>
+  </div>
+  <p><var>Î</var>, <var>Â</var> and <var>D̂</var> are the rendered colour, opacity and depth. The halo term penalises rendered
+  opacity outside the object, which keeps the Gaussians from spilling beyond its silhouette. Gaussians that end up in free space
+  or outside a seen silhouette are removed. This is the only optimisation in FuseGen: nothing is trained.</p>
+</section>
+
+<section id="step-lact" aria-labelledby="s3-h">
+  <h2 id="s3-h"><span class="stepno gen">3</span>Generating what has not been seen</h2>
+  <p>The unknown voxels need a prior. We take it from <b>LaCT</b>, a novel-view synthesis model: given posed images of an object,
+  it renders the object from any new camera. LaCT builds no explicit 3D model. It writes the input images into a small set of
+  network weights, the <em>fast weights</em>, with a few gradient steps at test time, and renders a new view by querying them
+  with the new camera. Because it is trained on a large collection of 3D objects, it renders plausible images even of sides no
+  input image shows. We use the released model as is.</p>
+  <p><b>From novel views to shape.</b> A rendered view tells us where the object is <em>not</em>. If a pixel shows background,
+  the ray through it crosses only empty space. At each completion step, LaCT encodes the frames seen so far and renders a ring of
+  24 views around the object. Every unknown voxel that projects onto background in any of these views is removed. This is
+  classical space carving, except that the images are synthesised rather than captured. The voxels that remain form the
+  completed shape. Its colours come from the rendered views.</p>
+
+  <figure class="card" id="ring-card">
+    <div class="card-controls">
+      <label>object <select id="rg-obj"><option value="school_bus1">school bus</option><option value="alarm">alarm clock</option>
+        <option value="grandmother">grandmother</option><option value="sofa">sofa</option></select></label>
+      <label class="slider-l grow">completion <input type="range" id="rg-slider" min="0" max="10" value="1" aria-label="Completion"></label>
+      <div class="seg" role="group" aria-label="Show">
+        <button data-ring="rgb" aria-pressed="true">novel views</button><button data-ring="sil" aria-pressed="false">silhouettes used to carve</button></div>
+    </div>
+    <img id="rg-img" class="ring-img" src="assets/ring/school_bus1_g02.jpg" alt="LaCT's ring of 24 novel views">
+    <p class="ring-stat" id="rg-stat" aria-live="polite"></p>
+    <figcaption>LaCT's ring of 24 novel views at each completion of a real stream. Early (frame 4, five input frames, all from
+      above) the unseen underside is a blurry guess, but the silhouettes are already good enough to carve most of the unknown
+      shadow away. By about frame 30 the views are sharp.</figcaption>
+  </figure>
+
+  <p><b>Why this completion fits the state.</b></p>
+  <ul class="why">
+    <li><b>It is born in the stream's frame.</b> LaCT renders from cameras in the stream's own world frame, so the completion
+      lands exactly where the observations are. A 3D generator produces an object in its own canonical frame, which must then be
+      registered to the observations, at the risk of a wrong scale, rotation or mirror image.</li>
+    <li><b>It can only remove unknown space.</b> Carving removes space, and only unknown space, so the completion can neither
+      place surface where a camera has seen empty space nor remove a measured surface.</li>
+  </ul>
+  <p><b>Refreshing the completion.</b> As frames arrive, LaCT sees more of the object and the unknown region shrinks. We recompute
+  the completion every few frames (every four in our experiments), each time from all frames so far, and the new completion
+  replaces the old one. Between two refreshes, newly observed space simply takes precedence.</p>
+  <figure class="card chart-card">
+    <div class="chart-h">Unknown voxels over the stream, <span id="u-obj-name">school bus</span></div>
+    <div class="chart-sub">millions of voxels in the 256³ grid; <span class="mk-key"></span> a completion refresh</div>
+    <div class="chart" id="u-chart"></div>
+  </figure>
+</section>
+
+<section id="step-compose" aria-labelledby="s4-h">
+  <h2 id="s4-h"><span class="stepno">4</span>Composing the output</h2>
+  <p>When an output is requested, observed and generated geometry are merged voxel by voxel, according to the labels:</p>
+  <div class="eq cases" role="math" aria-label="Composite signed distance by label">
+    <span class="lhs"><var>D</var>(<var>x</var>) =</span>
+    <table class="cases-t"><tbody>
+      <tr><td>+1</td><td><span class="lab"><i class="sw free"></i>free</span></td><td class="cm">free space stays empty</td></tr>
+      <tr><td><var>w</var>&thinsp;<var>d</var>(<var>x</var>) + (1 − <var>w</var>)&thinsp;<var>d</var><sub>gen</sub>(<var>x</var>)</td><td><span class="lab"><i class="sw surf"></i>surface</span></td><td class="cm">measured surface from the TSDF (<var>w</var> = 1 once seen twice)</td></tr>
+      <tr><td>min(<var>d</var><sub>gen</sub>(<var>x</var>), −<var>ε</var>)</td><td><span class="lab"><i class="sw beh"></i>behind</span></td><td class="cm">just behind a measured surface is inside</td></tr>
+      <tr><td><var>d</var><sub>gen</sub>(<var>x</var>) + <var>r</var>(<var>x</var>)</td><td><span class="lab"><i class="sw unk"></i>unknown</span></td><td class="cm">the generated shape, shifted to join the measured surface without a step</td></tr>
+    </tbody></table>
+  </div>
+  <p>The output mesh is the zero level set of <var>D</var>, extracted with marching cubes. The output Gaussians are the observed
+  Gaussians plus the generated Gaussians on the unknown part of that surface, so mesh and Gaussians describe the same shape. By
+  construction, no output surface lies in space a camera has seen to be empty. Across the 120 outputs of our benchmark run, none
+  has any.</p>
+  <figure class="card" id="cmp-card">
+    <div class="card-controls">
+      <label>object <select id="cp-obj"><option value="school_bus1">school bus</option><option value="alarm">alarm clock</option></select></label>
+      <div class="seg" role="group" aria-label="Frame" id="cp-frames">
+        <button data-cf="7" aria-pressed="true">frame 7</button><button data-cf="31" aria-pressed="false">frame 31</button>
+        <button data-cf="79" aria-pressed="false">frame 79</button></div>
+      <span class="fine">drag any view: all three turn together</span>
+    </div>
+    <div class="triptych">
+      <div><div class="viewer" id="cp-obs"></div><p class="vcap"><b>Observed only</b>: every unknown voxel filled</p></div>
+      <div><div class="viewer" id="cp-hull"></div><p class="vcap"><b class="gen-t">Completion</b>: LaCT's carved hull</p></div>
+      <div><div class="viewer" id="cp-comp"></div><p class="vcap"><b>Composite</b>: <span class="obs-t">measured</span> + <span class="gen-t">generated</span></p></div>
+    </div>
+    <figcaption>The three parts of an output on a real stream. Without a completion, filling every unknown voxel leaves the
+      shadow of the seen surface (left). LaCT's carved hull (centre) has the right overall shape but no detail. The composite
+      (right) keeps every measured surface and uses the hull only where nothing has been measured.</figcaption>
+  </figure>
+</section>
+
+<section id="step-da3" aria-labelledby="s5-h">
+  <h2 id="s5-h">Predicted depth</h2>
+  <p>When a network predicts depth from the images instead of a sensor measuring it, the depth is right only up to a scale
+  factor, which is unknown and changes from frame to frame. The cameras resolve this. Only at the correct scale does a frame's
+  depth agree with the depth and silhouettes of the other frames, and the known distances between camera positions fix the
+  absolute scale. After every frame FuseGen estimates one scale per frame with a scale-only bundle adjustment, rebuilds the
+  evidence grid when the scales change, and lets frames or pixels that still disagree contribute only their silhouettes and
+  colours. With the benchmark's own predicted depth (19 objects), FuseGen leads Stream3D from mid-stream on: at frame 79,
+  median Chamfer 0.032 vs 0.044 and 18.4 vs 17.5&nbsp;dB PSNR.</p>
+</section>
+
+<section id="results" class="wide" aria-labelledby="res-h">
+  <h2 id="res-h">Results</h2>
+  <p class="narrow">This is Stream3D's 30-object GSO benchmark: 80 frames per stream, scored after frames 7, 31, 55 and 79 on
+  held-out views. Every method gets the same ground-truth cameras, masks and depth. The evaluator's mirrored ground-truth basis
+  is corrected, and the paper reports the released evaluator too. Baselines run on the same frozen generator, SAM&nbsp;3D.</p>
+  <div class="tiles four">
+    <div class="tile"><div class="tile-l">PSNR at frame 79</div><div class="tile-v">21.3&nbsp;dB</div>
+      <div class="tile-d">Stream3D 16.9, eight-view regeneration 17.0</div></div>
+    <div class="tile"><div class="tile-l">median Chamfer at frame 79</div><div class="tile-v">0.023</div>
+      <div class="tile-d">baselines 0.039–0.054</div></div>
+    <div class="tile"><div class="tile-l">objects with a lower Chamfer at frame 79</div><div class="tile-v">29–30 / 30</div>
+      <div class="tile-d">against each baseline, paired</div></div>
+    <div class="tile"><div class="tile-l">time per new frame</div><div class="tile-v">0.31&nbsp;s</div>
+      <div class="tile-d">a 48th of Stream3D's 15.1&nbsp;s</div></div>
+  </div>
+
+  <figure class="card chart-card">
+    <div class="card-controls">
+      <div class="chart-h">Over the stream</div>
+      <div class="seg" role="group" aria-label="Metric" id="hz-metric">
+        <button data-metric="psnr" aria-pressed="true">PSNR ↑</button><button data-metric="cd" aria-pressed="false">Chamfer ↓</button>
+        <button data-metric="lpips" aria-pressed="false">LPIPS ↓</button></div>
+      <button class="btn small ghost" id="hz-table-btn" aria-expanded="false" aria-controls="hz-table">Show table</button>
+    </div>
+    <div class="legend chart-legend" id="hz-legend"></div>
+    <div class="chart" id="hz-chart"></div>
+    <div id="hz-table" class="table-wrap" hidden></div>
+    <figcaption>30 objects, corrected evaluator. Median Chamfer distance, mean PSNR and mean LPIPS at the four scored frames.
+      FuseGen leads in geometry from the first scored frame. In appearance it is level at frame 7 and pulls ahead from frame 31,
+      as measured surface replaces generated surface. Click a legend entry to hide a method.</figcaption>
+  </figure>
+
+  <figure class="card table-card">
+    <div class="chart-h">Final frame (frame 79)</div>
+    <div class="table-wrap"><table class="res">
+      <thead><tr><th>Method</th><th>CD mean ↓</th><th>CD median ↓</th><th>IoU ↑</th><th>PSNR ↑</th><th>SSIM ↑</th><th>LPIPS ↓</th><th>s / frame ↓</th></tr></thead>
+      <tbody>
+        <tr><td>SAM 3D, single view</td><td>0.0652</td><td>0.0537</td><td>0.797</td><td>16.47</td><td>0.866</td><td>0.147</td><td>4.99</td></tr>
+        <tr><td>MVSAM3D, 8 random views</td><td>0.0550</td><td>0.0388</td><td>0.828</td><td>17.02</td><td>0.867</td><td>0.135</td><td>14.39</td></tr>
+        <tr><td>Stream3D (released code)</td><td>0.0566</td><td>0.0424</td><td>0.801</td><td>16.89</td><td>0.871</td><td>0.134</td><td>15.12</td></tr>
+        <tr class="sep"><td>Latent refinement</td><td>0.0516</td><td>0.0327</td><td>0.844</td><td>16.95</td><td>0.866</td><td>0.138</td><td>0.45</td></tr>
+        <tr class="ours"><td>FuseGen, LaCT completion</td><td>0.0271</td><td><b>0.0232</b></td><td>0.924</td><td><b>21.27</b></td><td>0.926</td><td>0.083</td><td><b>0.31</b></td></tr>
+        <tr class="ours"><td>FuseGen, SAM 3D completion</td><td><b>0.0265</b></td><td>0.0243</td><td><b>0.931</b></td><td>21.21</td><td><b>0.927</b></td><td><b>0.081</b></td><td>0.79</td></tr>
+      </tbody></table></div>
+    <figcaption>30 objects, corrected evaluator, one seed. CD: unsquared L2 Chamfer distance. The regenerating methods update
+      once per 6 new frames; FuseGen and latent refinement after every frame. With the baselines' own generator as the completion
+      (last row), FuseGen still beats every baseline at every scored frame.</figcaption>
+  </figure>
+
+  <figure class="card chart-card">
+    <div class="chart-h">Time per new frame</div>
+    <div class="chart-sub">seconds, mean over frames 0–79 on one GPU</div>
+    <div class="chart" id="cost-chart"></div>
+  </figure>
+
+  <figure class="card">
+    <img src="assets/qual_grid.jpg" alt="Qualitative comparison on four held-out objects at frames 7, 31 and 79" class="full">
+    <figcaption>Four held-out objects at frames 7, 31 and 79, rendered at a held-out view. At frame 7 only the top of each object
+      has been seen: FuseGen's unseen side comes from LaCT's carved hull and is blurry. From frame 31 on, measured surface
+      dominates and FuseGen matches the ground truth, where the regenerating methods re-draw it.</figcaption>
+  </figure>
+</section>
+
+<section id="ablations" aria-labelledby="abl-h">
+  <h2 id="abl-h">What each part does</h2>
+  <p>Ablations on the 10 development objects: registration-free Chamfer-L1 (×100) and PSNR at frames 7, 31 and 79.</p>
+  <div class="table-wrap"><table class="res compact">
+    <thead><tr><th>Variant</th><th>CD 7</th><th>CD 31</th><th>CD 79</th><th>PSNR 7</th><th>PSNR 31</th><th>PSNR 79</th><th>s / frame</th></tr></thead>
+    <tbody>
+      <tr class="ours"><td>FuseGen (full)</td><td>2.75</td><td>0.85</td><td>0.09</td><td>15.73</td><td>18.17</td><td>20.77</td><td>0.31</td></tr>
+      <tr><td>no completion (fill all unknown)</td><td>13.13</td><td>4.09</td><td>0.09</td><td>11.42</td><td>15.22</td><td>21.43</td><td>0.24</td></tr>
+      <tr><td>SAM 3D completion instead of LaCT</td><td>3.74</td><td>1.12</td><td>0.24</td><td>16.14</td><td>19.30</td><td>21.37</td><td>0.78</td></tr>
+      <tr><td>fusion only (point splats + TSDF)</td><td>5.57</td><td>1.65</td><td>0.09</td><td>14.80</td><td>18.61</td><td>19.25</td><td>0.01</td></tr>
+      <tr><td>fusion + post-hoc Stream3D fill</td><td>5.20</td><td>1.22</td><td>0.45</td><td>15.65</td><td>18.31</td><td>18.40</td><td>&gt;&nbsp;15</td></tr>
+    </tbody></table></div>
+  <p>Without a completion, the early output is 5× worse in geometry: the prior is what makes frame 7 work. A 3D generator
+  as the completion gives sharper colours but worse geometry (it must be registered to the stream), at 2.5× the cost. Plain
+  fusion is exact late, but cannot complete the object early.</p>
+</section>
+
+<section id="limits" aria-labelledby="lim-h">
+  <h2 id="lim-h">Limitations</h2>
+  <ul>
+    <li>Every method receives ground-truth cameras and masks. The main comparison also uses exact depth; with predicted depth the
+      lead shrinks to 0.8–2.3&nbsp;dB PSNR from mid-stream on.</li>
+    <li>One seed, synthetic renders of scanned objects: no real captures yet.</li>
+    <li>Early in the stream the colours of the unseen side are blurry, because they come from LaCT's renders: SSIM at frame 7 is
+      below the baselines'.</li>
+    <li>Carving cannot see into concavities that no camera has looked into; those stay filled until observed.</li>
+  </ul>
+</section>
+
+<section id="cite" aria-labelledby="cite-h">
+  <h2 id="cite-h">Citation</h2>
+  <pre class="bib">@inproceedings{fusegen2027,
+  title     = {Reconstruct What You See, Generate What You Don't:
+               Streaming 3D Object Reconstruction with an Exact Evidence State},
+  author    = {Anonymous},
+  booktitle = {CVPR (under review)},
+  year      = {2027}
+}</pre>
+</section>
+</main>
+
+<footer>
+  <p>The interactive visualisations come from a re-run of the paper's configuration on four held-out objects. All numbers are
+  from the paper's tables. The 2D demo is an illustration of the rules, not the 3D implementation.</p>
+</footer>
+
+<script src="assets/data.js"></script>
+<script src="assets/vendor/three.min.js"></script>
+<script src="js/viewer.js"></script>
+<script src="js/toy2d.js"></script>
+<script src="js/charts.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>
