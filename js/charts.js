@@ -78,7 +78,7 @@
   function lineChart(host, opt) {
     const draw = () => {
       host.querySelectorAll("svg").forEach((s => s.remove()));
-      const W = Math.max(300, host.clientWidth), Hh = opt.height || 300, narrow = W < NARROW;
+      const W = Math.max(240, host.clientWidth), Hh = opt.height || 300, narrow = W < NARROW;
       const showXLabel = opt.xLabel && (!opt.xFmt || narrow);
       const m = {
         l: 52,
@@ -100,6 +100,7 @@
       const pad = (hi - lo) * .08 || 1;
       const ticks = niceTicks(opt.zero ? 0 : lo - pad, hi + pad, 5);
       const y0 = ticks[0], y1 = ticks[ticks.length - 1];
+      const dec = Math.max(0, Math.ceil(-Math.log10(ticks[1] - ticks[0]) - 1e-9));
       const xs = opt.x, xmin = xs[0], xmax = xs[xs.length - 1], ins = opt.xFmt ? 26 : 8;
       const X = v => m.l + ins + (v - xmin) / (xmax - xmin) * (W - m.l - m.r - 2 * ins);
       const Y = v => Hh - m.b - (v - y0) / (y1 - y0) * (Hh - m.t - m.b);
@@ -111,7 +112,7 @@
           y2: Y(tk),
           class: tk === y0 ? "basel" : "gridl"
         }, svg);
-        text(svg, m.l - 8, Y(tk) + 4, opt.fmt(tk, true), "tick", "end");
+        text(svg, m.l - 8, Y(tk) + 4, opt.fmt(tk, true, dec), "tick", "end");
       }
       const xt = opt.xTicks || xs;
       for (const v of xt) text(svg, X(v), Hh - m.b + 18, opt.xFmt && !narrow ? opt.xFmt(v) : String(v), "tick", "middle");
@@ -152,7 +153,14 @@
         const s = vis.find((q => q.key === opt.endLabel));
         if (s) {
           const v = s.values[s.values.length - 1], str = `${s.label || s.name} ${opt.fmt(v)}`;
-          if (narrow) text(svg, X(xmax), opt.lowerBetter ? Y(v) + 20 : Y(v) - 12, str, "dlabel", "end"); else text(svg, X(xmax) + 10, Y(v) + 4, str, "dlabel");
+          if (narrow) {
+            const others = vis.filter((q => q !== s)).map((q => Y(q.values[q.values.length - 1])));
+            const yv = Y(v), roomAbove = yv - 12 - 13 >= 2, roomBelow = yv + 20 <= Hh - m.b - 4;
+            const clashAbove = others.some((o => o < yv && yv - o < 22)), clashBelow = others.some((o => o > yv && o - yv < 26));
+            let below = opt.lowerBetter;
+            if (below && (!roomBelow || clashBelow) && roomAbove && !clashAbove) below = false; else if (!below && (!roomAbove || clashAbove) && roomBelow && !clashBelow) below = true;
+            text(svg, X(xmax), below ? yv + 20 : yv - 12, str, "dlabel", "end");
+          } else text(svg, X(xmax) + 10, Y(v) + 4, str, "dlabel");
         }
       }
       const tip = tipEl(host), xh = el("line", {
@@ -225,7 +233,7 @@
   function barChart(host, opt) {
     const draw = () => {
       host.querySelectorAll("svg").forEach((s => s.remove()));
-      const W = Math.max(300, host.clientWidth), bar = 18, stack = W < NARROW, gap = stack ? 34 : 14;
+      const W = Math.max(240, host.clientWidth), bar = 18, stack = W < NARROW, gap = stack ? 34 : 14;
       const labelW = stack ? 8 : Math.min(230, W * .36);
       const m = {
         l: labelW,

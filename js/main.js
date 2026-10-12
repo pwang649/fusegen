@@ -293,6 +293,7 @@
     function show() {
       const keys = [ "obs", "hull", "comp" ].map((k => `${st.obj}_f${pad2(st.f)}_${k}`)), mine = ++tok;
       [ "obs", "hull", "comp" ].forEach(((k, i) => v[k] && v[k].show(keys[i])));
+      if (!v.obs && !v.hull && !v.comp) return;
       Promise.all(keys.map((k => FGView.getMesh(k)))).then((gs => {
         if (mine !== tok) return;
         const lo = [ Infinity, Infinity, Infinity ], hi = [ -Infinity, -Infinity, -Infinity ];
@@ -370,12 +371,12 @@
       head: "PSNR (dB)"
     },
     cd: {
-      fmt: (v, tick) => tick ? v.toFixed(2) : v.toFixed(4),
+      fmt: (v, tick, dec) => tick ? v.toFixed(dec ?? 2) : v.toFixed(4),
       lower: true,
       head: "median Chamfer"
     },
     lpips: {
-      fmt: (v, tick) => tick ? v.toFixed(2) : v.toFixed(3),
+      fmt: (v, tick, dec) => tick ? v.toFixed(dec ?? 2) : v.toFixed(3),
       lower: true,
       head: "LPIPS"
     }
@@ -491,6 +492,12 @@
       stream3d: "Stream3D",
       fusegen: "FuseGen (ours)"
     };
+    const SHORT = {
+      gt: "GT",
+      latent: "Latent",
+      stream3d: "Stream3D",
+      fusegen: "Ours"
+    };
     function show(obj) {
       grid.replaceChildren();
       const cell = (cls, txt) => {
@@ -500,7 +507,10 @@
         grid.appendChild(d);
       };
       cell("ql-h", "");
-      for (const c of Q.cols) cell("ql-h" + (c === "fusegen" ? " ours" : ""), COLS[c]);
+      for (const c of Q.cols) {
+        cell("ql-h" + (c === "fusegen" ? " ours" : ""), COLS[c]);
+        grid.lastChild.dataset.short = SHORT[c];
+      }
       for (const f of Q.frames) {
         cell("ql-r", `frame ${f}`);
         for (const c of Q.cols) {

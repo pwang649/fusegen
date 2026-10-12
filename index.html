@@ -59,7 +59,7 @@
       </select></label>
   </div>
   <p class="tldr"><b>The idea.</b> A camera circles an object, and after every frame we want a complete 3D model.
-    FuseGen fuses every frame into an explicit 3D state that never forgets: the surface the cameras have <span class="obs-t">measured</span>.
+    FuseGen fuses every frame into an explicit 3D state that integrates every measurement: the surface the cameras have <span class="obs-t">measured</span>.
     It asks a generative model only about the space no camera has constrained yet: the part that is <span class="gen-t">generated</span>.
     As the cameras cover the object, generated surface gives way to measured surface, and generated content never replaces a measurement.</p>
 </section>
@@ -177,10 +177,11 @@
       <path d="M690,260 L690,196" class="edge gen" marker-end="url(#arr-o)"/>
       <text x="682" y="234" class="el gen" text-anchor="end">unknown space only</text>
       <path d="M500,104 L540,104 L540,256" class="edge dotted" marker-end="url(#arr)"/>
-      <text x="534" y="244" class="el" text-anchor="end">labels</text>
+      <text x="546" y="214" class="el" text-anchor="start">labels</text>
       <path d="M776,146 L808,146" class="edge" marker-end="url(#arr)"/>
     </svg>
   </figure>
+  <p class="fine dia-cue">Scroll sideways for the whole diagram →</p>
 </section>
 
 <section id="toy" class="wide" aria-labelledby="toy-h">
@@ -263,9 +264,10 @@
     <span class="nw"><var>d</var>(<var>x</var>) ← <span class="frac"><span><var>W</var>(<var>x</var>)&thinsp;<var>d</var>(<var>x</var>) + <var>s</var>/<var>τ</var></span><span><var>W</var>(<var>x</var>) + 1</span></span>,</span>
     <span class="nw"><var>W</var>(<var>x</var>) ← <var>W</var>(<var>x</var>) + 1</span>
   </div>
-  <p>Up to a cap on the weight, this average is the least-squares estimate of the truncated distance from all frames that saw
-  the voxel. With measured depth, the grid therefore summarises the entire depth history in constant memory: the TSDF is never
-  re-optimised, re-encoded or replayed, and never forgets (the observed Gaussians below, by contrast, revisit earlier frames).</p>
+  <p>Up to a cap of 64 observations per voxel, this average is the least-squares estimate of the truncated distance from all
+  frames that saw the voxel (a voxel in front of the band that the band once reached is updated with the truncation value, +1).
+  With measured depth, the grid therefore summarises the entire depth history in constant memory: the TSDF is never
+  re-optimised, re-encoded or replayed (the observed Gaussians below, by contrast, revisit earlier frames).</p>
   <p><b>What is known, and what is not.</b> Every voxel also collects evidence of being empty: a ray that passes through it
   before the measured surface, or a projection outside the object mask. From this evidence each voxel gets one of four labels:
   <span class="lab"><i class="sw surf"></i>surface</span> (on a measured surface),
@@ -308,13 +310,14 @@
   and are placed in 3D with the measured depth. A few optimisation steps then fit all Gaussians to the new frame and to randomly
   chosen earlier frames:</p>
   <div class="eq" role="math" aria-label="L equals the L1 colour error plus the L1 opacity-versus-mask error plus lambda D times the L1 depth error plus lambda h times the halo loss">
-    <var class="cal">ℒ</var> = ‖<var>Î</var> − <var>I</var>‖<sub>1</sub> + ‖<var>Â</var> − <var>M</var>‖<sub>1</sub>
-    + <var>λ<sub>D</sub></var>&thinsp;‖<var>D̂</var> − <var>D</var>‖<sub>1</sub> + <var>λ<sub>h</sub></var>&thinsp;<var class="cal">ℒ</var><sub>halo</sub>
+    <span class="nw"><var class="cal">ℒ</var> = ‖<var>Î</var> − <var>I</var>‖<sub>1</sub> + ‖<var>Â</var> − <var>M</var>‖<sub>1</sub></span>
+    <span class="nw">+ <var>λ<sub>D</sub></var>&thinsp;‖<var>D̂</var> − <var>D</var>‖<sub>1</sub> + <var>λ<sub>h</sub></var>&thinsp;<var class="cal">ℒ</var><sub>halo</sub></span>
   </div>
   <p><var>Î</var>, <var>Â</var> and <var>D̂</var> are the rendered colour, opacity and depth. The halo term penalises rendered
   opacity outside the object, which keeps the Gaussians from spilling beyond its silhouette. Gaussians that end up in free space
-  or outside a seen silhouette are removed. No network is trained or fine-tuned: LaCT below is used as released, and this
-  per-stream fit of the observed Gaussians (with a least-squares refit of their colours at output) is the only optimisation
+  or outside a seen silhouette are removed. No network is trained or fine-tuned: LaCT below is used as released (its
+  test-time update of the fast weights is part of the released model). With measured depth and the LaCT completion, this
+  per-stream fit of the observed Gaussians, with a least-squares refit of their colours at output, is the only optimisation
   FuseGen adds.</p>
 </section>
 
@@ -425,7 +428,7 @@
     <div class="tile"><div class="tile-l">PSNR at frame 79</div><div class="tile-v">21.3&nbsp;dB</div>
       <div class="tile-d">Stream3D 16.9, eight-view regeneration 17.0</div></div>
     <div class="tile"><div class="tile-l">median Chamfer at frame 79</div><div class="tile-v">0.023</div>
-      <div class="tile-d">baselines 0.039–0.054</div></div>
+      <div class="tile-d">regenerating baselines 0.039–0.054, latent refinement 0.033</div></div>
     <div class="tile"><div class="tile-l">objects with a lower Chamfer at frame 79</div><div class="tile-v">29–30 / 30</div>
       <div class="tile-d">against each baseline, paired</div></div>
     <div class="tile"><div class="tile-l">time per new frame</div><div class="tile-v">0.31&nbsp;s</div>
@@ -462,14 +465,15 @@
       </tbody></table></div>
     <figcaption>30 objects, corrected evaluator, one seed. CD: unsquared L2 Chamfer distance. The regenerating methods update
       once per 6 new frames; FuseGen and latent refinement after every frame. With the baselines' own generator as the completion
-      (last row), FuseGen still beats every baseline at every scored frame, on every metric except SSIM at frame 7, where it is
-      level.</figcaption>
+      (last row), FuseGen still beats every baseline at every scored frame, on every quality metric except SSIM at frame 7, where
+      it is level.</figcaption>
   </figure>
 
   <figure class="card chart-card">
     <div class="chart-h">Time per new frame</div>
-    <div class="chart-sub">seconds per new frame on one RTX 5000 Ada. FuseGen and latent refinement: mean step time,
-      including every completion call. Regenerating methods: steady-state time per chunk divided by its 6 new frames.</div>
+    <div class="chart-sub">seconds per new frame on one RTX 5000 Ada. FuseGen: mean step time over frames 0–79, including
+      every completion call. Latent refinement: mean over frames 1–79 (its frame-0 generation, about 4 s, excluded).
+      Regenerating methods: steady-state time per chunk divided by its 6 new frames.</div>
     <div class="chart" id="cost-chart"></div>
   </figure>
 
@@ -500,9 +504,10 @@
     </tbody></table></div>
   <p class="fine">‡ Timed on a GPU shared with other jobs.</p>
   <p>Without a completion, the Chamfer error at frames 7 and 31 is 4.8× higher: the prior is what makes the early stream work.
-  A 3D generator as the completion gives sharper colours but worse geometry on these objects, especially early (it must be
-  registered to the stream), at 2.5× the cost; on all 30 objects the two completions are level at frame 79. Plain fusion is
-  exact late, but cannot complete the object early.</p>
+  A 3D generator as the completion gives sharper colours (+0.4, +1.1 and +0.6&nbsp;dB) but less accurate geometry on these
+  objects (36&nbsp;%, 32&nbsp;% and 2.7× higher registration-free Chamfer error at frames 7, 31 and 79; it must be registered
+  to the stream), at 2.5× the cost; on all 30 objects, scored after the evaluator's fitted similarity, the two completions are
+  level at frame 79. Plain fusion is exact late, but cannot complete the object early.</p>
 </section>
 
 <section id="limits" aria-labelledby="lim-h">
@@ -516,7 +521,8 @@
     <li>Carving cannot see into concavities that no camera has looked into; those stay filled until observed.</li>
     <li>With predicted depth, the appearance at frame 7 falls behind and one of the 19 objects fails; the scale search and the
       depth gates were added after a first run on these objects.</li>
-    <li>Every setting was chosen on 10 of the 30 objects; the other 20 show the same margins.</li>
+    <li>Every setting of the main configuration was chosen on 10 of the 30 objects; the other 20 show the same margins (with
+      predicted depth, so do the 13 of the 19 objects outside those 10).</li>
   </ul>
 </section>
 
@@ -533,9 +539,10 @@
 </main>
 
 <footer>
-  <p>All benchmark numbers are from the paper. The interactive figures come from a re-run of the paper's configuration on four
-  held-out objects, which is not bit-identical to the paper's run; their per-object statistics (generated share, voxel counts,
-  carved shares, completion frames) are from that re-run. The 2D demo illustrates the rules; it is not the 3D implementation.</p>
+  <p>All benchmark numbers, the results charts and tables, and the qualitative grid are from the paper's run. The 3D viewers,
+  evidence slices, LaCT rings and the unknown-voxel chart come from a re-run of its configuration on four held-out objects,
+  which is not bit-identical; their per-object statistics (generated share, voxel counts, carved shares, completion frames)
+  are from that re-run. The 2D demo illustrates the rules; it is not the 3D implementation.</p>
 </footer>
 
 <script src="assets/data.js"></script>
