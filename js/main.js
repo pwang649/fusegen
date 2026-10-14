@@ -325,8 +325,8 @@
     label: "FuseGen",
     color: "#2a78d6",
     cd: [ .0482, .0289, .0274, .0232 ],
-    psnr: [ 15.24, 17.87, 19.59, 21.27 ],
-    lpips: [ .169, .126, .103, .083 ]
+    psnr: [ 16.12, 19.17, 20.09, 21.27 ],
+    lpips: [ .159, .118, .1, .083 ]
   }, {
     key: "fgs",
     name: "FuseGen, SAM 3D completion",
@@ -457,7 +457,7 @@
     fmt: (v, tick) => tick ? `${v} s` : `${v.toFixed(2)} s`,
     rows: [ {
       name: "FuseGen, LaCT completion",
-      value: .31,
+      value: .32,
       color: COLOR.fg,
       ours: true
     }, {
