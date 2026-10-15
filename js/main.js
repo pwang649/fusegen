@@ -324,9 +324,9 @@
     name: "FuseGen, LaCT completion",
     label: "FuseGen",
     color: "#2a78d6",
-    cd: [ .0482, .0289, .0274, .0232 ],
-    psnr: [ 16.12, 19.17, 20.09, 21.27 ],
-    lpips: [ .159, .118, .1, .083 ]
+    cd: [ .0504, .0283, .0263, .0241 ],
+    psnr: [ 16.08, 19.28, 20.07, 21.2 ],
+    lpips: [ .155, .114, .1, .083 ]
   }, {
     key: "fgs",
     name: "FuseGen, SAM 3D completion",
