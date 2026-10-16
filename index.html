@@ -74,11 +74,11 @@
   about the space no camera has constrained yet. That completion comes from a test-time-trained view-synthesis model whose ring
   of novel-view silhouettes carves the unknown region; it is re-queried every few frames and confined to unknown voxels, so
   generated content never overrides an observation. On Stream3D's 30-object GSO benchmark, with the same cameras and depth for
-  every method and the benchmark evaluator's mirrored ground-truth basis corrected, FuseGen ends the stream at 21.2&nbsp;dB PSNR
+  every method and the benchmark evaluator's mirrored ground-truth basis corrected, FuseGen ends the stream at 21.4&nbsp;dB PSNR
   against 16.9–17.0&nbsp;dB for Stream3D and multi-view regeneration, halves their Chamfer distance, leads in geometry and PSNR
   from the first scored frame, and costs 0.32&nbsp;s per frame, a 47th of Stream3D's; with the benchmark's estimated depth, whose scale it
-  recovers from the cameras, it still leads from mid-stream by 0.9–1.6&nbsp;dB. On real captures of 14 objects (Stanford-ORB), with calibrated cameras and
-  depth from the aligned scans, it again ends about 4&nbsp;dB ahead. Ground-truth cameras and masks; one seed.</p>
+  recovers from the cameras, it still leads from mid-stream by 1.4–2.2&nbsp;dB. On real captures of 14 objects (Stanford-ORB), with calibrated cameras and
+  depth from the aligned scans, it again ends about 4.6&nbsp;dB ahead. Ground-truth cameras and masks; one seed.</p>
 </section>
 
 <section id="why" aria-labelledby="why-h">
@@ -267,7 +267,10 @@
   <p>Up to a cap of 64 observations per voxel, this average is the least-squares estimate of the truncated distance from all
   frames that saw the voxel (a voxel in front of the band that the band once reached is updated with the truncation value, +1).
   With measured depth, the grid therefore summarises the entire depth history in constant memory: the TSDF is never
-  re-optimised, re-encoded or replayed (the observed Gaussians below, by contrast, revisit earlier frames).</p>
+  re-optimised, re-encoded or replayed (the observed Gaussians below, by contrast, revisit earlier frames). Pixels that see
+  their surface at a grazing angle, more than 81° from the normal of the depth map, are not fused (their mask still
+  counts): along such a ray <var>s</var> is many times the distance to the surface, and their sparse measurements would
+  streak the side walls.</p>
   <p><b>What is known, and what is not.</b> Every voxel also collects evidence of being empty: a ray that passes through it
   before the measured surface, or a projection outside the object mask. From this evidence each voxel gets one of four labels:
   <span class="lab"><i class="sw surf"></i>surface</span> (on a measured surface),
@@ -357,8 +360,8 @@
     <li><b>It is born in the stream's frame.</b> LaCT renders from cameras in the stream's own world frame, so the completion
       lands exactly where the observations are. A 3D generator produces an object in its own canonical frame, which must then be
       registered to the observations, at the risk of a wrong scale, rotation or mirror image.</li>
-    <li><b>It can only remove unmeasured space.</b> Carving only removes space, never a measured surface or the voxels right
-      next to it, and the composite keeps the space just behind a measured surface inside. So the completion can neither place
+    <li><b>It only fills unmeasured space.</b> Carving only removes space, and the composite below keeps every measurement:
+      measured surface comes from the TSDF and the space just behind it stays inside. So the completion can neither place
       surface where a camera has seen empty space nor remove a measured surface.</li>
   </ul>
   <p><b>Refreshing the completion.</b> As frames arrive, LaCT sees more of the object and the unknown region shrinks. We recompute
@@ -385,7 +388,10 @@
       <tr><td><var>d</var><sub>gen</sub>(<var>x</var>) + <var>r</var>(<var>x</var>)</td><td><span class="lab"><i class="sw unk"></i>unknown</span></td><td class="cm">the generated shape, shifted to join the measured surface without a step</td></tr>
     </tbody></table>
   </div>
-  <p>The output mesh is the zero level set of <var>D</var>, extracted with marching cubes. The output Gaussians are the observed
+  <p>The unknown voxels then take a one-voxel Gaussian blur of <var>D</var>, so the completion meets the measurements without
+  voxel steps, and unknown space enclosed by the object is set inside: no camera sees into a solid object, and a completion
+  thinner than the measured shell would otherwise leave a hidden inner wall.
+  The output mesh is the zero level set of <var>D</var>, extracted with marching cubes. The output Gaussians are the observed
   Gaussians plus generated ones laid densely on the unknown part of that surface, flat along it and coloured from LaCT's
   views, so mesh and Gaussians describe the same shape. By
   construction, no output surface lies in space a camera has seen to be empty: none of the 120 outputs of our benchmark run
@@ -417,7 +423,7 @@
   absolute scale. After every frame FuseGen estimates one scale per frame with a scale-only bundle adjustment, rebuilds the
   evidence grid when the scales change, and lets frames or pixels that still disagree contribute only their silhouettes and
   colours. With the benchmark's own predicted depth (19 objects), FuseGen leads Stream3D from mid-stream on: at frame 79,
-  median Chamfer 0.039 vs 0.044 and 18.5 vs 17.5&nbsp;dB PSNR. At frame 7 its geometry and PSNR are ahead but its LPIPS
+  median Chamfer 0.032 vs 0.044 and 19.0 vs 17.5&nbsp;dB PSNR. At frame 7 its geometry and PSNR are ahead but its LPIPS
   and SSIM behind, and one of the 19 objects fails.</p>
 </section>
 
@@ -428,11 +434,11 @@
   to the ground-truth mesh, which favours it). The evaluator's mirrored ground-truth basis
   is corrected, and the paper reports the released evaluator too. Baselines run on the same frozen generator, SAM&nbsp;3D.</p>
   <div class="tiles four">
-    <div class="tile"><div class="tile-l">PSNR at frame 79</div><div class="tile-v">21.2&nbsp;dB</div>
+    <div class="tile"><div class="tile-l">PSNR at frame 79</div><div class="tile-v">21.4&nbsp;dB</div>
       <div class="tile-d">Stream3D 16.9, eight-view regeneration 17.0</div></div>
-    <div class="tile"><div class="tile-l">median Chamfer at frame 79</div><div class="tile-v">0.024</div>
+    <div class="tile"><div class="tile-l">median Chamfer at frame 79</div><div class="tile-v">0.0235</div>
       <div class="tile-d">regenerating baselines 0.039–0.054, latent refinement 0.033</div></div>
-    <div class="tile"><div class="tile-l">objects with a lower Chamfer at frame 79</div><div class="tile-v">29–30 / 30</div>
+    <div class="tile"><div class="tile-l">objects with a lower Chamfer at frame 79</div><div class="tile-v">30 / 30</div>
       <div class="tile-d">against each baseline, paired</div></div>
     <div class="tile"><div class="tile-l">time per new frame</div><div class="tile-v">0.32&nbsp;s</div>
       <div class="tile-d">a 47th of Stream3D's 15.1&nbsp;s</div></div>
@@ -450,8 +456,8 @@
     <div class="chart" id="hz-chart"></div>
     <div id="hz-table" class="table-wrap" hidden></div>
     <figcaption>30 objects, corrected evaluator. Median Chamfer distance, mean PSNR and mean LPIPS at the four scored frames.
-      FuseGen leads in geometry from the first scored frame. In appearance it is about 0.9&nbsp;dB ahead in PSNR at frame 7
-      (better on 19–21 of the 30 objects against each baseline), with a lower LPIPS but a slightly lower SSIM, and pulls further
+      FuseGen leads in geometry from the first scored frame. In appearance it is about 0.7&nbsp;dB ahead in PSNR at frame 7
+      (better on 20–22 of the 30 objects against each baseline), with a lower LPIPS but a slightly lower SSIM, and pulls further
       ahead from frame 31, as measured surface replaces generated surface. Click a legend entry to hide a method.</figcaption>
   </figure>
 
@@ -464,8 +470,8 @@
         <tr><td>MVSAM3D, 8 random views</td><td>0.0550</td><td>0.0388</td><td>0.828</td><td>17.02</td><td>0.867</td><td>0.135</td><td>14.39</td></tr>
         <tr><td>Stream3D (released code)</td><td>0.0566</td><td>0.0424</td><td>0.801</td><td>16.89</td><td>0.871</td><td>0.134</td><td>15.12</td></tr>
         <tr class="sep"><td>Latent refinement</td><td>0.0516</td><td>0.0327</td><td>0.844</td><td>16.95</td><td>0.866</td><td>0.138</td><td>0.45</td></tr>
-        <tr class="ours"><td>FuseGen, LaCT completion</td><td>0.0268</td><td><b>0.0241</b></td><td>0.920</td><td>21.20</td><td>0.925</td><td>0.083</td><td><b>0.32</b></td></tr>
-        <tr class="ours"><td>FuseGen, SAM 3D completion</td><td><b>0.0265</b></td><td>0.0243</td><td><b>0.931</b></td><td><b>21.21</b></td><td><b>0.927</b></td><td><b>0.081</b></td><td>0.79</td></tr>
+        <tr class="ours"><td>FuseGen, LaCT completion</td><td><b>0.0242</b></td><td><b>0.0235</b></td><td><b>0.934</b></td><td><b>21.43</b></td><td><b>0.929</b></td><td><b>0.079</b></td><td><b>0.32</b></td></tr>
+        <tr class="ours"><td>FuseGen, SAM 3D completion</td><td>0.0270</td><td>0.0256</td><td>0.933</td><td>21.29</td><td>0.927</td><td>0.081</td><td>0.79</td></tr>
       </tbody></table></div>
     <figcaption>30 objects, corrected evaluator, one seed. CD: unsquared L2 Chamfer distance. The regenerating methods update
       once per 6 new frames; FuseGen and latent refinement after every frame. With the baselines' own generator as the completion
@@ -504,8 +510,8 @@
   receives the masks, the cameras and depth, here rendered from the aligned scan, which stands in for an ideal depth sensor;
   every setting is unchanged. Because of their cost, the regenerating methods run on one scene per object.</p>
   <p class="narrow">FuseGen leads on every metric from the first scored frame (PSNR 21.6 against 18.6–19.4&nbsp;dB at frame 7), and the
-  lead grows: at frame 55, PSNR 23.8 against 18.4–19.4&nbsp;dB and a median Chamfer distance of 0.018 against 0.031–0.038,
-  with a higher PSNR than each regenerating method on 12 of the 14 scenes. The regenerating methods stay near 19&nbsp;dB from
+  lead grows: at frame 55, PSNR 24.1 against 18.4–19.4&nbsp;dB and a median Chamfer distance of 0.018 against 0.031–0.038,
+  with a higher PSNR than each regenerating method on 11–12 of the 14 scenes. The regenerating methods stay near 19&nbsp;dB from
   the first chunk on: they draw plausible objects, but with the colours, labels and proportions of their prior rather than
   those of the photographed object.</p>
   <figure class="card table-card">
@@ -514,20 +520,20 @@
       <thead><tr><th>Method</th><th>CD 7 ↓</th><th>PSNR 7 ↑</th><th>LPIPS 7 ↓</th><th>CD 31 ↓</th><th>PSNR 31 ↑</th><th>LPIPS 31 ↓</th><th>CD 55 ↓</th><th>PSNR 55 ↑</th><th>LPIPS 55 ↓</th></tr></thead>
       <tbody>
         <tr><td>SAM 3D, single view</td><td>0.036</td><td>18.55</td><td>0.104</td><td>0.030</td><td>18.89</td><td>0.093</td><td>0.038</td><td>18.41</td><td>0.101</td></tr>
-        <tr><td>MVSAM3D, 8 random views</td><td>0.034</td><td>19.42</td><td>0.090</td><td>0.030</td><td>19.74</td><td>0.085</td><td>0.031</td><td>19.42</td><td>0.088</td></tr>
-        <tr><td>Stream3D (released code)</td><td>0.031</td><td>18.94</td><td>0.090</td><td>0.031</td><td>19.10</td><td>0.092</td><td>0.033</td><td>19.34</td><td>0.089</td></tr>
-        <tr class="ours"><td>FuseGen, LaCT completion</td><td><b>0.028</b></td><td><b>21.60</b></td><td><b>0.075</b></td><td><b>0.018</b></td><td><b>23.56</b></td><td><b>0.055</b></td><td><b>0.018</b></td><td><b>23.78</b></td><td><b>0.055</b></td></tr>
+        <tr><td>MVSAM3D, 8 random views</td><td>0.034</td><td>19.42</td><td>0.090</td><td>0.029</td><td>19.74</td><td>0.085</td><td>0.031</td><td>19.42</td><td>0.088</td></tr>
+        <tr><td>Stream3D (released code)</td><td>0.031</td><td>18.94</td><td>0.090</td><td>0.031</td><td>19.10</td><td>0.092</td><td>0.032</td><td>19.34</td><td>0.089</td></tr>
+        <tr class="ours"><td>FuseGen, LaCT completion</td><td><b>0.027</b></td><td><b>21.56</b></td><td><b>0.072</b></td><td><b>0.019</b></td><td><b>24.11</b></td><td><b>0.052</b></td><td><b>0.018</b></td><td><b>24.06</b></td><td><b>0.053</b></td></tr>
       </tbody></table></div>
     <figcaption>Real photos, calibrated cameras and masks, depth rendered from the aligned scan for every method; scored on the
       held-out real photos with the corrected evaluator. Median Chamfer distance, mean PSNR and mean LPIPS at frames 7, 31 and
-      55. On all 42 scenes FuseGen scores 21.7, 23.1 and 22.8&nbsp;dB.</figcaption>
+      55. On all 42 scenes FuseGen scores 22.0, 24.0 and 23.9&nbsp;dB.</figcaption>
   </figure>
   <figure class="card">
     <img class="ring-img" src="assets/realcap/fig_realcap.jpg" alt="Held-out real photos of seven Stanford-ORB objects and the renders of FuseGen, Stream3D and MVSAM3D at the same cameras">
     <figcaption>Frame 55. Top: a held-out real photo; below: the renders of FuseGen, Stream3D and MVSAM3D at that camera after
       the evaluator's registration, all with the same inputs. Seven of the 14 scenes, each at the held-out view with FuseGen's
       median PSNR. FuseGen reproduces the photographed object, its labels and colours included; the regenerating methods draw
-      a plausible but different one. The registration turns FuseGen's can (sixth column) upside down.</figcaption>
+      a plausible but different one.</figcaption>
   </figure>
 </section>
 
@@ -537,25 +543,25 @@
   <div class="table-wrap"><table class="res compact">
     <thead><tr><th>Variant</th><th>CD 7</th><th>CD 31</th><th>CD 79</th><th>PSNR 7</th><th>PSNR 31</th><th>PSNR 79</th><th>s / frame</th></tr></thead>
     <tbody>
-      <tr class="ours"><td>FuseGen (full)</td><td>2.72</td><td>0.77</td><td>0.09</td><td>16.53</td><td>19.59</td><td>20.61</td><td>0.32</td></tr>
-      <tr><td>no completion (fill all unknown)</td><td>13.13</td><td>4.09</td><td>0.09</td><td>11.42</td><td>15.22</td><td>21.43</td><td>0.24<sup>‡</sup></td></tr>
-      <tr><td>SAM 3D completion instead of LaCT</td><td>3.74</td><td>1.12</td><td>0.24</td><td>16.14</td><td>19.30</td><td>21.37</td><td>0.78</td></tr>
+      <tr class="ours"><td>FuseGen (full)</td><td>2.84</td><td>0.72</td><td>0.09</td><td>16.10</td><td>19.81</td><td>21.16</td><td>0.32</td></tr>
+      <tr><td>no completion (fill all unknown)</td><td>13.24</td><td>4.11</td><td>0.09</td><td>11.10</td><td>15.22</td><td>21.01</td><td>0.10<sup>‡</sup></td></tr>
+      <tr><td>SAM 3D completion instead of LaCT</td><td>4.03</td><td>1.32</td><td>0.35</td><td>15.78</td><td>19.58</td><td>21.36</td><td>0.78</td></tr>
       <tr><td>fusion only (point splats + TSDF)</td><td>5.57</td><td>1.65</td><td>0.09</td><td>14.80</td><td>18.61</td><td>19.25</td><td>0.01</td></tr>
       <tr><td>fusion + post-hoc Stream3D fill</td><td>5.20</td><td>1.22</td><td>0.45</td><td>15.65</td><td>18.31</td><td>18.40</td><td>&gt;&nbsp;15</td></tr>
     </tbody></table></div>
   <p class="fine">‡ Timed on a GPU shared with other jobs.</p>
-  <p>Without a completion, the Chamfer error at frames 7 and 31 is 4.8 and 5.3× higher: the prior is what makes the early stream work.
-  A 3D generator as the completion gives less accurate geometry on these objects (37&nbsp;%, 45&nbsp;% and 2.7× higher
+  <p>Without a completion, the Chamfer error at frames 7 and 31 is 4.7 and 5.7× higher: the prior is what makes the early stream work.
+  A 3D generator as the completion gives less accurate geometry on these objects (42&nbsp;%, 83&nbsp;% and 3.9× higher
   registration-free Chamfer error at frames 7, 31 and 79; it must be registered to the stream) and sharper colours only at the
-  end (−0.4, −0.3 and +0.8&nbsp;dB PSNR at frames 7, 31 and 79), at 2.4× the cost; on all 30 objects, scored after the evaluator's fitted similarity, the two completions are
-  level at frame 79. Plain fusion is exact late, but cannot complete the object early.</p>
+  end (−0.3, −0.2 and +0.2&nbsp;dB PSNR at frames 7, 31 and 79), at 2.4× the cost; on all 30 objects, scored after the evaluator's fitted similarity, the two completions are
+  close at frame 79 (21.4 against 21.3&nbsp;dB). Plain fusion is exact late, but cannot complete the object early.</p>
 </section>
 
 <section id="limits" aria-labelledby="lim-h">
   <h2 id="lim-h">Limitations</h2>
   <ul>
     <li>Every method receives ground-truth cameras and masks. The main comparison also uses exact depth; with predicted depth the
-      lead shrinks to 0.9–1.6&nbsp;dB PSNR from mid-stream on.</li>
+      lead shrinks to 1.4–2.2&nbsp;dB PSNR from mid-stream on.</li>
     <li>One seed. On the real captures only ideal depth is tested: there the cameras are about six object sizes away, and the
       per-frame error of monocular depth, about 1&nbsp;% of the distance, amounts to a tenth of an object's depth extent, too
       much for depth fusion.</li>
